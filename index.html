@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>远程通话与屏幕共享</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+  <!-- 顶部状态栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📞</span>
+      <span>RemoteMeet</span>
+    </div>
+    <div class="status" id="connStatus">
+      <span class="dot"></span>
+      <span id="statusText">未连接</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- 加入/创建房间页面 -->
+    <section id="lobby" class="lobby">
+      <div class="lobby-card">
+        <h1>远程通话 & 屏幕共享</h1>
+        <p class="subtitle">基于 WebRTC 的点对点实时通话</p>
+
+        <div class="field">
+          <label for="roomName">房间号</label>
+          <input type="text" id="roomName" placeholder="输入或生成房间号" />
+          <div class="btn-row">
+            <button id="btnGenerate" class="btn btn-ghost">🎲 随机生成</button>
+            <button id="btnCreate" class="btn btn-primary">创建房间</button>
+            <button id="btnJoin" class="btn btn-secondary">加入房间</button>
+          </div>
+        </div>
+
+        <div class="share-box" id="shareBox" style="display:none;">
+          <label>邀请链接（复制后发给对方）</label>
+          <div class="link-row">
+            <input type="text" id="shareLink" readonly />
+            <button id="btnCopy" class="btn btn-small">复制</button>
+          </div>
+        </div>
+
+        <p class="hint">提示：双方需要使用 HTTPS 打开本页面才能调用摄像头/麦克风/屏幕共享。</p>
+      </div>
+    </section>
+
+    <!-- 通话界面 -->
+    <section id="room" class="room" style="display:none;">
+      <div class="room-header">
+        <div class="room-title">房间：<span id="currentRoom"></span></div>
+        <button id="btnLeave" class="btn btn-danger">离开房间</button>
+      </div>
+
+      <div class="videos">
+        <div class="video-wrap local">
+          <video id="localVideo" autoplay muted playsinline></video>
+          <div class="label">我（本地）</div>
+        </div>
+        <div class="video-wrap remote">
+          <video id="remoteVideo" autoplay playsinline></video>
+          <div class="label">对方（远程）</div>
+          <div id="remotePlaceholder" class="placeholder">等待对方加入…</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="btnMic" class="ctrl-btn" title="麦克风">
+          <span class="icon">🎤</span>
+          <span class="ctrl-text">麦克风开</span>
+        </button>
+        <button id="btnCam" class="ctrl-btn" title="摄像头">
+          <span class="icon">📷</span>
+          <span class="ctrl-text">摄像头开</span>
+        </button>
+        <button id="btnScreen" class="ctrl-btn" title="屏幕共享">
+          <span class="icon">🖥️</span>
+          <span class="ctrl-text">共享屏幕</span>
+        </button>
+        <button id="btnHangup" class="ctrl-btn ctrl-danger" title="挂断">
+          <span class="icon">📴</span>
+          <span class="ctrl-text">挂断</span>
+        </button>
+      </div>
+
+      <div id="messageLog" class="message-log"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
