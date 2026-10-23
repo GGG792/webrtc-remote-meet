@@ -1,6 +1,7 @@
 /* =========================================================
-   RemoteMeet - WebRTC 远程通话与屏幕共享
+   RemoteMeet - WebRTC 语音通话与屏幕共享
    基于 PeerJS 公共信令服务器，纯前端可部署在 GitHub Pages
+   说明：不请求摄像头权限，仅使用麦克风 + 屏幕共享
    ========================================================= */
 
 const PEER_PREFIX = "remote-";
@@ -18,10 +19,10 @@ const btnCopy = document.getElementById("btnCopy");
 const currentRoom = document.getElementById("currentRoom");
 const btnLeave = document.getElementById("btnLeave");
 const localVideo = document.getElementById("localVideo");
+const localPlaceholder = document.getElementById("localPlaceholder");
 const remoteVideo = document.getElementById("remoteVideo");
 const remotePlaceholder = document.getElementById("remotePlaceholder");
 const btnMic = document.getElementById("btnMic");
-const btnCam = document.getElementById("btnCam");
 const btnScreen = document.getElementById("btnScreen");
 const btnHangup = document.getElementById("btnHangup");
 const messageLog = document.getElementById("messageLog");
@@ -30,13 +31,13 @@ const statusText = document.getElementById("statusText");
 
 // 全局状态
 let peer = null;
-let localStream = null;
-let screenStream = null;
+let localStream = null;      // 包含：音频轨 + 占位视频轨（来自 canvas）
+let screenStream = null;     // 屏幕共享流
+let dummyVideoTrack = null;  // 占位视频轨，用于预先建立视频发送通道
 let currentCall = null;
 let currentRoomName = "";
 let isHost = false;
 let micOn = true;
-let camOn = true;
 let screenSharing = false;
 
 /* ---------------- 工具函数 ---------------- */
@@ -63,23 +64,41 @@ function randomRoomName() {
   return s;
 }
 
-function getMediaConstraints() {
-  return {
-    video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-    audio: true,
-  };
+// 用离屏 canvas 生成一个占位视频轨（1x1 透明帧），
+// 目的是让 PeerConnection 从一开始就有视频发送通道，
+// 屏幕共享时只需 replaceTrack，无需重新协商连接。
+function createDummyVideoTrack() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1;
+  canvas.height = 1;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgba(0,0,0,0)";
+  ctx.fillRect(0, 0, 1, 1);
+  const stream = canvas.captureStream(1); // 1 fps
+  return stream.getVideoTracks()[0];
 }
 
 /* ---------------- 媒体控制 ---------------- */
 
 async function startLocalMedia() {
   try {
-    localStream = await navigator.mediaDevices.getUserMedia(getMediaConstraints());
-    localVideo.srcObject = localStream;
-    log("已获取本地摄像头/麦克风", "success");
+    // 只请求麦克风，不请求摄像头
+    const audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: false,
+    });
+
+    // 构造本地流：音频轨 + 占位视频轨
+    dummyVideoTrack = createDummyVideoTrack();
+    localStream = new MediaStream([
+      ...audioStream.getAudioTracks(),
+      dummyVideoTrack,
+    ]);
+
+    log("已获取麦克风（无摄像头）", "success");
     return true;
   } catch (err) {
-    log("获取摄像头/麦克风失败：" + err.message, "error");
+    log("获取麦克风失败：" + err.message, "error");
     return false;
   }
 }
@@ -91,15 +110,6 @@ function toggleMic() {
   btnMic.classList.toggle("muted", !micOn);
   btnMic.querySelector(".ctrl-text").textContent = micOn ? "麦克风开" : "麦克风关";
   log(micOn ? "麦克风已开启" : "麦克风已静音");
-}
-
-function toggleCam() {
-  if (!localStream) return;
-  camOn = !camOn;
-  localStream.getVideoTracks().forEach((t) => (t.enabled = camOn));
-  btnCam.classList.toggle("muted", !camOn);
-  btnCam.querySelector(".ctrl-text").textContent = camOn ? "摄像头开" : "摄像头关";
-  log(camOn ? "摄像头已开启" : "摄像头已关闭");
 }
 
 async function toggleScreenShare() {
@@ -116,26 +126,30 @@ async function toggleScreenShare() {
     btnScreen.classList.add("active");
     btnScreen.querySelector(".ctrl-text").textContent = "停止共享";
 
-    // 替换本地视频显示
+    // 本地显示屏幕画面
     localVideo.srcObject = screenStream;
+    localPlaceholder.style.display = "none";
 
-    // 替换发送给对方的视频轨
+    // 替换发送给对方的视频轨：占位轨 -> 屏幕视频轨
     if (currentCall) {
-      const sender = currentCall.peerConnection
-        .getSenders()
-        .find((s) => s.track && s.track.kind === "video");
+      const pc = currentCall.peerConnection;
+      const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
       if (sender) {
         sender.replaceTrack(screenStream.getVideoTracks()[0]);
+      } else {
+        // 兜底：若没有视频 sender（理论上不会发生），手动添加
+        pc.addTrack(screenStream.getVideoTracks()[0], screenStream);
       }
-      // 若屏幕共享带音频，也发送
+      // 若屏幕共享带音频，也一并发送
       const screenAudio = screenStream.getAudioTracks()[0];
       if (screenAudio) {
-        currentCall.peerConnection.addTrack(screenAudio, screenStream);
+        pc.addTrack(screenAudio, screenStream);
       }
     }
 
     log("屏幕共享已开启", "success");
 
+    // 用户在系统弹窗中点"停止共享"时自动回调
     screenStream.getVideoTracks()[0].onended = () => stopScreenShare();
   } catch (err) {
     log("屏幕共享失败：" + err.message, "error");
@@ -151,16 +165,17 @@ function stopScreenShare() {
   btnScreen.classList.remove("active");
   btnScreen.querySelector(".ctrl-text").textContent = "共享屏幕";
 
-  // 恢复本地摄像头显示
-  if (localStream) localVideo.srcObject = localStream;
+  // 本地恢复占位提示
+  localVideo.srcObject = null;
+  localPlaceholder.style.display = "flex";
 
-  // 恢复发送摄像头视频轨
-  if (currentCall && localStream) {
-    const camTrack = localStream.getVideoTracks()[0];
-    const sender = currentCall.peerConnection
-      .getSenders()
-      .find((s) => s.track && s.track.kind === "video");
-    if (sender && camTrack) sender.replaceTrack(camTrack);
+  // 发送侧恢复为占位视频轨
+  if (currentCall && dummyVideoTrack) {
+    const pc = currentCall.peerConnection;
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+    if (sender) {
+      sender.replaceTrack(dummyVideoTrack);
+    }
   }
   log("屏幕共享已停止");
 }
@@ -169,7 +184,9 @@ function stopScreenShare() {
 
 function createPeer(roomName, asHost) {
   isHost = asHost;
-  const peerId = asHost ? PEER_PREFIX + roomName : PEER_PREFIX + roomName + "-g-" + randomRoomName();
+  const peerId = asHost
+    ? PEER_PREFIX + roomName
+    : PEER_PREFIX + roomName + "-g-" + randomRoomName();
   peer = new Peer(peerId, {
     host: "0.peerjs.com",
     port: 443,
@@ -248,6 +265,8 @@ function enterRoom(roomName) {
   currentRoom.textContent = roomName;
   lobby.style.display = "none";
   roomView.style.display = "flex";
+  // 初始显示本地占位（未共享屏幕）
+  localPlaceholder.style.display = "flex";
 }
 
 function leaveRoom() {
@@ -260,12 +279,17 @@ function leaveRoom() {
     localStream.getTracks().forEach((t) => t.stop());
     localStream = null;
   }
+  if (dummyVideoTrack) {
+    dummyVideoTrack.stop();
+    dummyVideoTrack = null;
+  }
   if (peer) {
     peer.destroy();
     peer = null;
   }
   localVideo.srcObject = null;
   remoteVideo.srcObject = null;
+  localPlaceholder.style.display = "none";
   remotePlaceholder.style.display = "flex";
   messageLog.innerHTML = "";
   lobby.style.display = "flex";
@@ -291,7 +315,8 @@ btnCreate.addEventListener("click", async () => {
   enterRoom(name);
   createPeer(name, true);
   // 生成分享链接
-  const url = location.origin + location.pathname + "?room=" + encodeURIComponent(name) + "#join";
+  const url =
+    location.origin + location.pathname + "?room=" + encodeURIComponent(name) + "#join";
   shareLink.value = url;
   shareBox.style.display = "block";
 });
@@ -322,12 +347,11 @@ btnCopy.addEventListener("click", async () => {
 });
 
 btnMic.addEventListener("click", toggleMic);
-btnCam.addEventListener("click", toggleCam);
 btnScreen.addEventListener("click", toggleScreenShare);
 btnHangup.addEventListener("click", leaveRoom);
 btnLeave.addEventListener("click", leaveRoom);
 
-// 页面 URL 带 join 时自动填入房间号
+// 页面 URL 带 room 参数时自动填入房间号
 const urlParams = new URLSearchParams(location.search);
 const roomParam = urlParams.get("room");
 if (roomParam) {
